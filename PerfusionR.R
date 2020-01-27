@@ -1,0 +1,318 @@
+#' ---
+#' title: "Perfusion Prediction"
+#' author: "Joe Krinke"
+#' date: "12/10/2019"
+#' output:
+#'   pdf_document: default
+#'   word_document: default
+#'   html_document:
+#'   r document: 
+#'     df_print: paged
+#' ---
+#' 
+#' ## Summary
+#' In this paper I present a model to determine if an individual has a heart perfusion defect based on physiological data. This model uses easily obtainable data such as an individual's sex, blood pressure, type of overall chest pain, and if they experience chest pain during exercise. Being male, having high blood pressure, and having exercise chest pain appear to increase the risk of having a perfusion defect. The effects of each type of overall chest pain on defect rate vary. Overall, this model performs fairly well, with a sensitivity of 74.3% and a specificity of 76.8%. The model's predicted perfusion status can be used to help medical professionals determine if additional testing is needed and reduce healthcare costs. 
+#' 
+#' 
+#' ## Introduction
+#' A perfusion defect is when an area of the heart has reduced blood flow under increased stress. The decreased amount of blood flow can lead to damage to the heart muscles, which can cause heart failure and other medical problems. Additionally, the detection of perfusion issues can be used to determine if someone has coronary artery disease, if their stent is working, or if they are an especially risky patient to perform heart surgery on.  Categories of perfusion issues include reversible defects and irreversible defects. The current diagnosis technique is a myocardial perfusion scan, an expensive test which requires an individual to exercise while connected to electrodes. However, this test is time-consuming, expensive, and may cause harm to patients. On top of this, symptoms for this ailment are vague, which can lead to late diagnosis and unneeded damage to the heart. The goal of this project is to build a logistic regression model to predict an individual’s perfusion status using physiological data. Being able to diagnose the disease earlier could allow for early intervention and produce better outcomes for patients. Alternatively, one could use the results from this model to determine whether to test someone, which could reduce testing costs and expose patients to less potential harm. 
+## ---- Importing Data/Packages, include=FALSE-------------------------------------------
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(lme4)
+library(pROC)
+library(arm)
+library(leaps)
+library(MASS)
+library(car)
+library(pastecs)
+library(caret)
+library(kableExtra)
+library(knitr)
+library(e1071)
+library(tinytex)
+
+
+df <- read.delim('heart.dat', header=FALSE, sep= ' ')
+
+
+names(df) <- c('Age','Sex','ChestPainType', 'BloodPressure', 'SerumCholesterol', 'FastingBloodSugar', 'Resting Electrocardiograph', 'MaximumHeartRate', 'ExerciseAngina', 'ST Depression', 'Slope of Peak ST', 'NumberofColoredVessels', 'PerfusionDefect', 'HeartDisease')
+#correlation <- cor(df, method='pearson')
+#heatmap(correlation, col=c('blue','green', 'yellow', 'red') )
+
+##Recoding Variables 
+df$PerfusionDefect <- as.factor(df$PerfusionDefect)
+df$ChestPainType <- as.factor(df$ChestPainType)
+df$HeartDisease <- as.factor(df$HeartDisease)
+df$NumberofColoredVessels <- as.factor(df$NumberofColoredVessels)
+df$ExerciseAngina <- as.factor(df$ExerciseAngina)
+df$FastingBloodSugar<- as.factor(df$FastingBloodSugar)
+df$`Resting Electrocardiograph` <- as.factor(df$`Resting Electrocardiograph`)
+df$Sex <- as.factor(df$Sex)
+
+
+##Collapsing into perfused/ non-perfused just in case. 
+
+df$BinaryPerfusion <- ifelse((df$PerfusionDefect==6 | df$PerfusionDefect==7), 1,0)
+
+##Exploratory Analysis
+df$SerumCholesterol <- df$SerumCholesteral
+df$SerumCholesterol<-NULL
+df$NumberofColoredVessels <- NULL
+df$HeartDisease <-NULL
+
+
+length(df$Sex)
+length(df$BinaryPerfusion)
+## Dropping Unneeded Variables
+df$PerfusionDefect <- NULL
+df$`ST Depression` <- NULL
+df$`Slope of Peak ST` <- NULL
+df$MaximumHeartRate <- NULL
+
+#' 
+## ---- Defining Functions, include=FALSE------------------------------------------------
+draw_confusion_matrix <- function(cm) {
+
+  total <- sum(cm$table)
+  res <- as.numeric(cm$table)
+
+  # Generate color gradients. Palettes come from RColorBrewer.
+  greenPalette <- c("#F7FCF5","#E5F5E0","#C7E9C0","#A1D99B","#74C476","#41AB5D","#238B45","#006D2C","#00441B")
+  redPalette <- c("#FFF5F0","#FEE0D2","#FCBBA1","#FC9272","#FB6A4A","#EF3B2C","#CB181D","#A50F15","#67000D")
+  getColor <- function (greenOrRed = "green", amount = 0) {
+    if (amount == 0)
+      return("#FFFFFF")
+    palette <- greenPalette
+    if (greenOrRed == "red")
+      palette <- redPalette
+    colorRampPalette(palette)(100)[10 + ceiling(90 * amount / total)]
+  }
+
+  # set the basic layout
+  layout(matrix(c(1,1,2)))
+  par(mar=c(2,2,2,2))
+  plot(c(100, 345), c(300, 450), type = "n", xlab="", ylab="", xaxt='n', yaxt='n')
+  title('CONFUSION MATRIX', cex.main=2)
+
+  # create the matrix 
+  classes = colnames(cm$table)
+  rect(150, 430, 240, 370, col=getColor("green", res[1]))
+  text(195, 435, classes[1], cex=1.2)
+  rect(250, 430, 340, 370, col=getColor("red", res[3]))
+  text(295, 435, classes[2], cex=1.2)
+  text(125, 370, 'Predicted', cex=1.3, srt=90, font=2)
+  text(245, 450, 'Actual', cex=1.3, font=2)
+  rect(150, 305, 240, 365, col=getColor("red", res[2]))
+  rect(250, 305, 340, 365, col=getColor("green", res[4]))
+  text(140, 400, classes[1], cex=1.2, srt=90)
+  text(140, 335, classes[2], cex=1.2, srt=90)
+
+  # add in the cm results
+  text(195, 400, res[1], cex=1.6, font=2, col='white')
+  text(195, 335, res[2], cex=1.6, font=2, col='white')
+  text(295, 400, res[3], cex=1.6, font=2, col='white')
+  text(295, 335, res[4], cex=1.6, font=2, col='white')
+
+  # add in the specifics 
+  plot(c(100, 0), c(100, 0), type = "n", xlab="", ylab="", main = "DETAILS", xaxt='n', yaxt='n')
+  text(10, 85, names(cm$byClass[1]), cex=1.2, font=2)
+  text(10, 70, round(as.numeric(cm$byClass[1]), 3), cex=1.2)
+  text(30, 85, names(cm$byClass[2]), cex=1.2, font=2)
+  text(30, 70, round(as.numeric(cm$byClass[2]), 3), cex=1.2)
+  text(50, 85, names(cm$byClass[5]), cex=1.2, font=2)
+  text(50, 70, round(as.numeric(cm$byClass[5]), 3), cex=1.2)
+  text(70, 85, names(cm$byClass[6]), cex=1.2, font=2)
+  text(70, 70, round(as.numeric(cm$byClass[6]), 3), cex=1.2)
+  text(90, 85, names(cm$byClass[7]), cex=1.2, font=2)
+  text(90, 70, round(as.numeric(cm$byClass[7]), 3), cex=1.2)
+
+  # add in the accuracy inion 
+  text(30, 35, names(cm$overall[1]), cex=1.5, font=2)
+  text(30, 20, round(as.numeric(cm$overall[1]), 3), cex=1.4)
+  text(70, 35, names(cm$overall[2]), cex=1.5, font=2)
+  text(70, 20, round(as.numeric(cm$overall[2]), 3), cex=1.4)
+}
+
+
+#' ## Data Used 
+#' The data used was obtained from the HCI Machine Learning Repository. This dataset was collected from four hospitals: the Hungarian Institute of Cardiology, University Hospital, Zurich, University Hospital, Basil, and the V.A. Medical Center. This data included 76 attributes related to a person’s demographics and heart health. However, the vast majority of research has been focused on the V.A. dataset, so I chose to use that data for my analysis. The subset of data I chose had 14 attributes and 270 observations; no missing data was observed. The variable for perfusion defects was originally separated into multiple categories corresponding to severity: no defect, reversable defect, and fixed defect. I recoded this variable into a binary defect/non-defect in order to deal with heavily imbalanced data (one class only had 14 observations). The variables Number of Colored Vessels, Slope of Peak ST, ST Depression, Heart Disease Status, and Maximum Heart Rate were excluded from the modeling and EDA process. This is because these variables were collected during the test for perfusion (or in later diagnostic stages). It would not make sense to include the previously mentioned variables in our model. A list of the final variables and their summary statistics are given below (table 1). 
+#' 
+## ---- Table of Variables, echo=FALSE---------------------------------------------------
+summary<- summary(df)
+kable(summary) %>% kable_styling(latex_options = "scale_down")
+
+#' 
+#' ## EDA 
+#' I conducted two types of exploratory analysis. For categorical variables I examined frequency tables and peformed chi-squared tests, and for continuous variables I examined binned plots and boxplots. There seemed to be no issues in the patterns of any of the binned plots (see appendix). The most promising continuous predictors were age and blood pressure. Below are boxplots of each against perfusion status (figures 1-2).
+## ---- Boxplot Blood Pressure, echo = FALSE---------------------------------------------
+#Blood pressure
+ggplot(df, aes(x= as.factor(BinaryPerfusion), y=BloodPressure), )+geom_boxplot()+xlab('Perfusion Status')
+
+
+#' 
+## ---- Boxplot Age, echo = FALSE--------------------------------------------------------
+#Age
+ggplot(df, aes(x= as.factor(BinaryPerfusion), y=Age))+geom_boxplot()+xlab('Perfusion Status')
+
+#' 
+#' A number of categorical variables appeared to be potentially significant. The table below shows each categorical variable and its corresponding chi-squared value (table 2).
+#' 
+## ---- Chi Squared Table, echo=FALSE----------------------------------------------------
+
+#Chisq test for categorical variables.
+p_val <- character()
+p_val <- append(p_val, chisq.test(df$BinaryPerfusion, df$Sex)[3])
+
+p_val <- append(p_val, chisq.test(df$BinaryPerfusion, df$ExerciseAngina)[3])
+p_val <- append(p_val, chisq.test(df$BinaryPerfusion, df$FastingBloodSugar)[3])
+p_val <- append(p_val, chisq.test(df$BinaryPerfusion, df$ChestPainType)[3])
+PValue <- p_val
+
+#Names of each Variable
+
+VariableName <- c('Sex', 'ExerciseAngina', 'FastingBloodSugar', 'ChestPainType')
+
+#' 
+## ---- wow, echo = FALSE----------------------------------------------------------------
+
+table_try <-t(rbind(PValue))
+
+rownames(table_try) <-VariableName
+colnames(table_try) <-'P-Value'
+
+kable(table_try)
+
+
+#' 
+#' 
+#' 
+#' 
+## ---- Initial Binary Modeling, include = FALSE-----------------------------------------
+
+
+##Full Binary Model
+
+model_full <- glm(BinaryPerfusion ~ . , data = df, family='binomial')
+summary(model_full)
+fitted_full <- fitted(model_full)
+
+#Model Evaluation
+plot.roc(df$BinaryPerfusion,fitted_full, main="ROC Curve", 
+print.thres="best", print.auc=T, col="#008600") 
+
+predicted_full <-ifelse(fitted_full>.499,1,0)
+cm_1<- confusionMatrix(as.factor(df$BinaryPerfusion), as.factor(predicted_full))
+draw_confusion_matrix(cm_1)
+
+
+#' ## Model Building Process
+#' I began by centering the continuous variables. Next, based on the results of the EDA I built an initial logistic regression model using age, sex, chest pain, blood pressure, resting ECG, and exercise angina as predictors.I avoided using interaction terms, as their inclusion in the model would likely increase the total number of predictors included (you can't have an interaction without both variables) which would go against the study's goal of reducing needed testing. This model performed fairly well, with a sensitivity of .773, specificity of .716, and an overall accuracy of .748. However, since the goal of my analysis was to reduce unneeded testing, I performed backwards stepwise selection using AIC as my selection criterion. This reduction in needed variables should help minimize the amount of inion that physicians would have to collect from patients. Below is a table describing the final model selected (table 2). Note that the coefficients and confidence intervals have all been exponentiated. 
+#' 
+## ---- Stepwise Selection , echo=FALSE--------------------------------------------------
+##Let's just try stepwise selection. 
+AIC_Model <- stepAIC(model_full, trace = FALSE, method='backward')
+
+#summary(AIC_Model)
+##Output of final selected model
+model_final <- glm(BinaryPerfusion ~ Sex + ChestPainType + BloodPressure + ExerciseAngina , data = df, family='binomial')
+predicted <- predict(model_final)
+#summary(model_final)
+
+
+##Exponentiated Coefficients
+
+exp_coefs <- exp(coef(model_final))
+
+exp_ci <- confint(model_final)
+exp_ci <- exp(exp_ci)
+
+
+
+exp_ci <- as.data.frame(exp_ci)
+exp_coefs <- as.data.frame(exp_coefs)
+
+exp_coefs <- cbind(rownames(exp_coefs), exp_coefs)
+exp_ci <- cbind(rownames(exp_ci), exp_ci)
+names(exp_coefs)[1]<- 'Variables'
+names(exp_ci)[1]<- 'Variables'
+
+final_table <- merge(exp_coefs, exp_ci, by='Variables')
+names(final_table)[2] <- 'Exponentiated Coefficient'
+final_table$'P-value' <- summary(model_final)$coefficients[,4]  
+kable(final_table)
+
+#' 
+#' The optimal threshold for the final stepwise model is .576 with an AUC of .812 (figure 3). 
+## ---- ROC Curve, echo = FALSE----------------------------------------------------------
+#ROC curve
+
+predicted<- fitted(model_final)
+plot.roc(df$BinaryPerfusion,predicted, main="ROC Curve", 
+print.thres="best", print.auc=T, col="#008600") 
+
+#' The reduced model actually had a slightly higher accuracy than the full model (figure 4). However, the increase in accuracy was accompanied by a small reduction in sensitivity. I consider this loss in sensitivity tolerable, as the reduced model no longer includes variables that require ECG testing or blood sugar testing. The savings associated with not having to run these tests likely would outweigh the costs associated with the sensitivity reduction. 
+#' 
+#' 
+## ---- Confusion Matrix, echo = FALSE---------------------------------------------------
+
+#Confusion Matrix.
+
+predicted_class <-ifelse(predicted>.576,1,0)
+cm_2<- confusionMatrix(as.factor(df$BinaryPerfusion), as.factor(predicted_class))
+draw_confusion_matrix(cm_2)
+
+#' 
+#' In addition to examining the confusion matrix I also looked at various binned residual plots to evaluate the fit of the model. There seemed to be no issues in the overall binned residual plot apart from a single point that is on the edge of the SD lines (figure 5). The binned residual plots for individual predictors showed no problems and can be seen in the appendix. Additionally, I examined the VIFs and determined there were no mulitcolinearity issues. A table with the VIFs can be found in the appendix. 
+#' 
+#' 
+## ---- Model Binned Residual Plot-------------------------------------------------------
+
+#Binned plot
+binnedplot(fitted(model_final),residuals(model_final,"resp"),xlab="Pred. probabilities",col.int="red4",ylab="Avg. residuals",main="Binned Residual Plot",col.pts="navy")
+
+#' 
+#' 
+#' 
+#' 
+#' ## Conclusion 
+#' 
+#' In this paper I present a model to determine if an individual has a heart perfusion defect based on physiological data. This model uses easily obtainable data such as an individual's sex, blood pressure, type of overall chest pain, and if they experience chest pain during exercise. Being male, having high blood pressure, and having exercise chest pain appear to increase the risk of having a perfusion defect. The effects of each type of overall chest pain on defect rate vary. Overall, this model performs fairly well, with a sensitivity of 74.3% and a specificity of 76.8%. The model's predicted perfusion status can be used to help medical professionals determine if additional testing is needed and reduce healthcare costs.  
+#' 
+#' ## Limitations
+#' 
+#' While the logistic model presented has its uses, it is not without limitations. In reality, heart perfusion is not typically measured in a binary fashion. There are varying degrees of perfusion that the model was unable to capture due to unbalanced data. Obtaining more data could allow one to build a multiclass model that would be able to provide more granular insights into the severity of a patient's perfusion defect. This more sensitive model could allow for opportunities for medical intervention, especially for those in the "reversable defect" stage.
+#' 
+#' In addition, regression models as a whole assume that the effect of a variable is uniform across its entire range. Let's consider, for example, using a patient's blood pressure as a predictor. This model assumes that every one-unit increase in blood pressure increases the likelihood of a defect by the same amount. It is more likely, in reality, that having blood pressure below/under a certain threshold would be associated with illness. Future work could review the literature to determine such a threshold and use a binary blood pressure variable instead. This line of reasoning would also apply to other continuous variables as well.
+#' 
+#' It is also important to understand that the goal of this study was not to evaluate how each factor is associated with perfusion. The goal was to find a parsimonious model that could potentially reduce testing costs. Future research could include using more control variables that were excluded by this model (age, race, smoking, etc.) in order to better isolate each effect. 
+#' 
+#' Finally, one should remember that the model produced should not be used to try to demonstrate direct causality. The model was not constructed with inference in mind and the human body's complexity makes drawing a direct line of causality difficult. Many systems in the body interact and many diseases stem from the same underlying causes. The logistic regression model should be viewed as demonstrating association and nothing more. 
+#' ## Appendix 
+#' 
+#' 
+## ---- Appendix Binned Plots, echo = FALSE----------------------------------------------
+#Binned plots
+#Blood Pressure
+binnedplot(y=df$BinaryPerfusion, df$BloodPressure,xlab="Blood Pressure",ylim=c(0,1),col.pts="navy", ylab ='Perfusion',main="Binned Blood Pressure and Perfusion Status",col.int="white")
+
+
+
+binnedplot(y=df$BinaryPerfusion, df$Age,xlab="Age",ylim=c(0,1),col.pts="navy", ylab ='Perfusion',main="Age and Perfusion Status",col.int="white")
+
+
+
+#' 
+## ---- Individual Residual Binned plots, echo = FALSE-----------------------------------
+#Blood Pressure
+binnedplot(df$BloodPressure,residuals(model_final,"resp"),xlab="Blood Pressure",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual Plot",col.pts="navy")
+
+
+
+#' 
+## ---- VIFs, echo = FALSE---------------------------------------------------------------
+vif_table<- vif(model_final)
+kable(vif_table)
+
